@@ -17,7 +17,17 @@ export async function login(_prevState: { error?: string } | undefined, formData
   // subsequent page.
   cookies().set(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    // NOT process.env.NODE_ENV === "production": the Dockerfile always
+    // sets NODE_ENV=production, but the portal's ALB is deliberately
+    // HTTP-only for now (no ACM cert/domain yet -- see modules/
+    // portal_service's own comment on why). A Secure cookie is
+    // silently dropped by the browser over plain HTTP, which is
+    // exactly what broke login here: server-side everything succeeded
+    // (cookie "set", listTenants() verified, redirect fired), the
+    // browser just never actually kept the cookie, so middleware sent
+    // it straight back to /login with no error to show. Flip this to
+    // an env-driven check once the ALB has TLS.
+    secure: process.env.PORTAL_HTTPS === "true",
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 12,
