@@ -1,0 +1,90 @@
+name: Promote to prod
+
+# Same shape as bedrock-gateway-app's workflow of the same name: a prod
+# release is an explicit action someone takes after validating a
+# specific image in dev, never an automatic side effect of pushing to
+# main. Retags and pushes the exact image bytes gateway-dev-portal
+# already ran -- no rebuild.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >
+          Tag already pushed to gateway-dev-portal by a "Deploy to dev"
+          run, e.g. "sha-<full 40-char commit SHA>". Copy it from that
+          run's logs or `aws ecr describe-images --repository-name
+          gateway-dev-portal` -- don't type one from memory.
+        required: true
+        type: string
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.image_tag }} to prod
+    runs-on: ubuntu-latest
+    # Belt-and-suspenders: workflow_dispatch already requires someone
+    # with write access to click "Run workflow", and this environment's
+    # required reviewer rule (repo Settings -> Environments -> prod)
+    # still forces a separate approval on top of that.
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume dev role to read the validated image
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PORTAL_DEPLOY_ROLE_ARN_DEV }}
+          aws-region: us-east-1
+
+      - id: ecr-login-dev
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull the exact image dev validated
+        run: |
+          docker pull "${{ steps.ecr-login-dev.outputs.registry }}/gateway-dev-portal:${{ inputs.image_tag }}"
+
+      - name: Assume prod role to push + deploy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PORTAL_DEPLOY_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+
+      # Re-login is required, not cosmetic: the docker credential
+      # helper's token so far still carries the dev role's (read-only,
+      # gateway-dev-portal-scoped) permissions.
+      - id: ecr-login-prod
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Retag and push to gateway-prod-portal (no rebuild -- same image bytes)
+        id: push
+        run: |
+          SRC="${{ steps.ecr-login-dev.outputs.registry }}/gateway-dev-portal:${{ inputs.image_tag }}"
+          DST="${{ steps.ecr-login-prod.outputs.registry }}/gateway-prod-portal:${{ inputs.image_tag }}"
+          docker tag "$SRC" "$DST"
+          docker push "$DST"
+          echo "image=$DST" >> "$GITHUB_OUTPUT"
+
+      - name: Download current prod task definition
+        run: |
+          aws ecs describe-task-definition --task-definition gateway-prod-portal --query taskDefinition \
+            | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > task-definition.json
+
+      - name: Render new image into task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: portal
+          image: ${{ steps.push.outputs.image }}
+
+      - name: Deploy task definition to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: gateway-prod-portal-service
+          cluster: gateway-prod-portal-cluster
+          wait-for-service-stability: true
