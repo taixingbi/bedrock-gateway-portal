@@ -1,13 +1,13 @@
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeCodeForIdToken } from "@/lib/cognito";
+import { exchangeCodeForIdToken, portalUrl } from "@/lib/cognito";
 import { listTenants } from "@/lib/gateway";
 import { SESSION_COOKIE, STATE_COOKIE } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
-function loginError(request: NextRequest, message: string) {
-  const url = new URL("/login", request.url);
+function loginError(message: string) {
+  const url = new URL(portalUrl("/login"));
   url.searchParams.set("error", message);
   return NextResponse.redirect(url);
 }
@@ -19,10 +19,10 @@ export async function GET(request: NextRequest) {
   cookies().delete(STATE_COOKIE);
 
   if (!code) {
-    return loginError(request, "Cognito did not return an authorization code.");
+    return loginError("Cognito did not return an authorization code.");
   }
   if (!state || !expectedState || state !== expectedState) {
-    return loginError(request, "Login request expired or was tampered with. Try again.");
+    return loginError("Login request expired or was tampered with. Try again.");
   }
 
   let idToken: string;
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     idToken = await exchangeCodeForIdToken(code);
   } catch (err) {
     const message = err instanceof Error ? err.message : "token exchange failed";
-    return loginError(request, message);
+    return loginError(message);
   }
 
   // Same as before Cognito: set the cookie, then make one real admin
@@ -50,8 +50,8 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     cookies().delete(SESSION_COOKIE);
     const message = err instanceof Error ? err.message : "token rejected";
-    return loginError(request, `Signed in with Cognito, but the gateway rejected the session: ${message}`);
+    return loginError(`Signed in with Cognito, but the gateway rejected the session: ${message}`);
   }
 
-  return NextResponse.redirect(new URL("/tenants", request.url));
+  return NextResponse.redirect(portalUrl("/tenants"));
 }

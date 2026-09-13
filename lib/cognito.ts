@@ -19,6 +19,18 @@ function requireConfig() {
   }
 }
 
+// Absolute URLs on this portal's own public domain -- deliberately
+// not built from a request's Host header. Confirmed live: the
+// container sees the ECS task's private DNS name as Host
+// (ip-10-x-x-x.ec2.internal:8080), not the public CloudFront domain,
+// so NextResponse.redirect(new URL(path, request.url)) sends browsers
+// to an unreachable internal address. PORTAL_BASE_URL is the one
+// value actually guaranteed correct.
+export function portalUrl(path: string): string {
+  requireConfig();
+  return `${PORTAL_BASE_URL}${path}`;
+}
+
 export function authorizeUrl(state: string): string {
   requireConfig();
   const params = new URLSearchParams({
