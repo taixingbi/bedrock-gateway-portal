@@ -25,33 +25,53 @@ every page just renders what the gateway already computes.
 
 ## Auth
 
-The gateway has no real OIDC provider wired up yet (see
-`bedrock-gateway-app/services/gateway/config.py` -- it falls back to a
-per-process dev JWT keypair). Rather than fabricate a login flow the
-gateway can't actually verify, this portal asks the operator to paste
-in a `platform_admin`-scoped bearer token they already have (minted
-the same way any other admin API caller gets one, e.g.
-`scripts/generate_dev_token.py` run inside the gateway container via
-`aws ecs execute-command`, or a real OIDC token once one exists). The
-token is held in an HttpOnly cookie, never sent to the browser, and
-attached server-side to every gateway call. Wire up a real IdP in
-front of both the gateway and this portal before using it for anyone
-who shouldn't have that token in cleartext at mint time.
+Human sign-in goes through Amazon Cognito's Hosted UI (Authorization
+Code flow), separate from the AWS_IAM/SigV4 path service/application
+callers use directly against the gateway. Human user -> Cognito ->
+OIDC JWT -> portal; service/application -> IAM role/STS/SigV4 ->
+gateway -- two trust mechanisms for two different kinds of caller,
+not one flow doing both.
+
+- `GET /login` links to `GET /api/auth/login`, which sets a CSRF
+  `state` cookie and redirects to Cognito's Hosted UI.
+- `GET /api/auth/callback` validates `state`, exchanges the
+  authorization code for tokens (`lib/cognito.ts`), and holds the
+  resulting **ID token** (not the access token -- only the ID token
+  carries `custom:tenant_id`/`custom:application_id`) in the same
+  HttpOnly `gw_admin_token` cookie the gateway calls already used,
+  never sent to the browser.
+- Before trusting the new session, the callback makes one real admin
+  call (`listTenants()`); if the gateway rejects the token (e.g. an
+  admin not yet in the `platform_admin` Cognito group), the cookie is
+  unwound rather than leaving the operator silently "logged in".
+- `logout()` clears the cookie and also redirects through Cognito's
+  `/logout` endpoint, so the Hosted UI's own browser session doesn't
+  silently re-authenticate the same user on the next sign-in.
+- Admins are provisioned via Terraform (`aws_cognito_user` +
+  `aws_cognito_user_in_group` in `bedrock-gateway-infra`), not
+  self-service signup -- Cognito emails a temporary password, and the
+  Hosted UI forces a change on first login.
 
 ## Local development
 
 ```bash
-cp .env.example .env.local   # point GATEWAY_API_URL at a running gateway
+cp .env.example .env.local   # point GATEWAY_API_URL at a running gateway, plus COGNITO_*/PORTAL_BASE_URL
 npm install
 npm run dev
 ```
 
 `GATEWAY_API_URL` must be the gateway's open JWT route (bedrock-gateway-infra's
-`api_gateway_url` output), not the `/iam/*` SigV4 route.
+`api_gateway_url` output), not the `/iam/*` SigV4 route. `COGNITO_DOMAIN`,
+`COGNITO_CLIENT_ID`, `COGNITO_CLIENT_SECRET`, `COGNITO_REGION`, and
+`PORTAL_BASE_URL` come from `bedrock-gateway-infra`'s `cognito_idp`
+module outputs -- already wired as container env vars in
+`environments/dev/main.tf`.
 
 ## Known limitations (MVP, not a production frontend)
 
-- **Auth**: see above -- paste-a-token, not a real login flow.
+- **HTTP-only ALB**: no TLS/ACM cert yet, so session cookies aren't
+  marked `Secure` (`PORTAL_HTTPS` env var controls this). Flip once a
+  domain + cert exist.
 - **Read-mostly**: the only mutation wired up is the tenant kill
   switch (the one write endpoint the gateway already exposes). Quota/
   budget/guardrail-policy edits, route-set edits, and model
