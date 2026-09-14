@@ -114,3 +114,82 @@ export function setTenantState(tenantId: string, state: string) {
     { method: "PUT", body: JSON.stringify({ state }) }
   );
 }
+
+// M11: Application Onboarding (plan section 22).
+export type OnboardingStatus =
+  | "PENDING_APPROVAL"
+  | "APPROVED"
+  | "PROVISIONING"
+  | "ACTIVE"
+  | "REJECTED"
+  | "FAILED";
+
+export type OnboardingRequestSummary = {
+  request_id: string;
+  tenant_id: string;
+  application_id: string;
+  environment: string;
+  auth_type: "iam" | "oauth";
+  principal_arn: string | null;
+  requested_models: string[];
+  rpm_limit: number;
+  monthly_budget: number | null;
+  guardrail_policy: string;
+  data_classification: string;
+  requested_by: string;
+  status: OnboardingStatus;
+  reason: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+export type OnboardingAuditEvent = {
+  event: string;
+  actor: string;
+  timestamp: number;
+  reason: string | null;
+};
+
+export function listOnboardingRequests() {
+  return gatewayFetch<{ requests: OnboardingRequestSummary[] }>("/v1/admin/onboarding-requests");
+}
+
+export function getOnboardingRequest(requestId: string) {
+  return gatewayFetch<OnboardingRequestSummary & { history: OnboardingAuditEvent[] }>(
+    `/v1/admin/onboarding-requests/${encodeURIComponent(requestId)}`
+  );
+}
+
+export type NewOnboardingRequest = {
+  tenant_id: string;
+  application_id: string;
+  environment: string;
+  auth_type: "iam" | "oauth";
+  principal_arn?: string;
+  requested_models: string[];
+  rpm_limit: number;
+  monthly_budget?: number;
+  guardrail_policy: string;
+  data_classification: string;
+};
+
+export function submitOnboardingRequest(body: NewOnboardingRequest) {
+  return gatewayFetch<{ request_id: string; status: OnboardingStatus }>(
+    "/v1/admin/onboarding-requests",
+    { method: "POST", body: JSON.stringify(body) }
+  );
+}
+
+export function approveOnboardingRequest(requestId: string) {
+  return gatewayFetch<OnboardingRequestSummary>(
+    `/v1/admin/onboarding-requests/${encodeURIComponent(requestId)}/approve`,
+    { method: "POST" }
+  );
+}
+
+export function rejectOnboardingRequest(requestId: string, reason: string) {
+  return gatewayFetch<OnboardingRequestSummary>(
+    `/v1/admin/onboarding-requests/${encodeURIComponent(requestId)}/reject`,
+    { method: "POST", body: JSON.stringify({ reason }) }
+  );
+}
